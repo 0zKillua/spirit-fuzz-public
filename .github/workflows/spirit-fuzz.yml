@@ -1,0 +1,54 @@
+name: spirit-fuzz
+run-name: spirit-fuzz ${{ inputs.token }}
+on:
+  workflow_dispatch:
+    inputs:
+      file: { description: "test file", required: true }
+      contract: { description: "test contract", required: true }
+      functions: { description: "test function regex", required: true }
+      seedBase: { description: "base fuzz seed", required: true }
+      runs: { description: "invariant runs per job", required: true }
+      depth: { description: "invariant depth per job", required: true }
+      indices: { description: "JSON array of matrix indices", required: true }
+      token: { description: "unique dispatch tag, shown in the run name", required: false, default: "" }
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        index: ${{ fromJSON(inputs.indices) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache forge build
+        uses: actions/cache@v4
+        with:
+          path: |
+            out
+            cache
+          key: forge-${{ hashFiles('src/**', 'test/**', 'foundry.toml') }}
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: "v1.7.1"
+      - name: Fuzz
+        run: |
+          SEED=$(( ${{ inputs.seedBase }} + ${{ matrix.index }} ))
+          echo "seed=$SEED" > result.env
+          set +e
+          FOUNDRY_INVARIANT_RUNS="${{ inputs.runs }}" FOUNDRY_INVARIANT_DEPTH="${{ inputs.depth }}" FOUNDRY_INVARIANT_SHOW_METRICS=true \
+            forge test --match-path "${{ inputs.file }}" --match-contract "^${{ inputs.contract }}$" \
+            --match-test "${{ inputs.functions }}" --fuzz-seed "$SEED" -vvv > output.txt 2>&1
+          echo "code=$?" >> result.env
+      - name: Package result
+        if: always()
+        run: |
+          mkdir -p result
+          mv output.txt result/output.txt 2>/dev/null || echo "(no forge output)" > result/output.txt
+          mv result.env result/result.env 2>/dev/null || echo "code=-1" > result/result.env
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: job-${{ matrix.index }}
+          path: result/
